@@ -2,7 +2,10 @@ package matlab
 
 import (
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNewFileFromReader(t *testing.T) {
@@ -37,8 +40,10 @@ func TestReadElement(t *testing.T) {
 		t.Fatal(err.Error())
 	}
 
-	_, err = f.ReadElement()
-	if err != nil {
-		t.Fatal(err.Error())
-	}
+	vars := f.GetVarsNames()
+	assert.Len(t, vars, 5)
+	assert.Subset(t, vars, strings.Split("XRZTP", ""))
+	r, hasVar := f.GetVar("R")
+	assert.True(t, hasVar)
+	assert.Equal(t, r.Dimension, []int32{7165, 23, 3})
 }

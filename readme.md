@@ -16,9 +16,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/daniellowtw/matlab"
-	"github.com/davecgh/go-spew/spew"
 	"os"
+	
+	"github.com/daniellowtw/matlab"
 )
 
 func main() {
@@ -31,13 +31,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	elements, err := file.ReadAllElements()
-	if err != nil {
-		fmt.Println("Err reading elements ")
-		panic(err)
-	}
-	fmt.Printf("Number of elements read: %+v\n", len(elements))
-	spew.Dump(elements)
+	fmt.Println(file.GetVarsNames()) // prints the variables in the mat file
+	matrix, _ := file.GetVar("a")
+	// convenient method to marshal into go types
+	var _ []int64 = matrix.IntArray() 
+	floatMatrix, _ := file.GetVar("b")
+	// convenient method to marshal into go types
+	var _ []float64 = floatMatrix.DoubleArray() 
 }
 ```
 

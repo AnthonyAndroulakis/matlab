@@ -8,8 +8,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // DataType represents matlab data types
@@ -50,6 +53,42 @@ func (d DataType) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// NumBytes returns the number of bytes needed to represent the datatype
+func (d DataType) NumBytes() int {
+	switch d {
+	case DTmiINT8:
+		return 1
+	case DTmiUINT8:
+		return 1
+	case DTmiUTF8:
+		return 1
+	case DTmiINT16:
+		return 2
+	case DTmiUINT16:
+		return 2
+	case DTmiUTF16:
+		return 2
+	case DTmiINT32:
+		return 4
+	case DTmiUINT32:
+		return 4
+	case DTmiUTF32:
+		return 4
+	case DTmiSINGLE:
+		return 4
+	case DTmiDOUBLE:
+		return 8
+	case DTmiINT64:
+		return 8
+	case DTmiUINT64:
+		return 8
+	case DTmiMATRIX:
+	case DTmiCOMPRESSED:
+	default:
+	}
+	panic("Cannot get NumBytes of variable length type: " + d.String())
 }
 
 // Data Types as specified according to byte indicators
@@ -161,8 +200,9 @@ func (f *File) readHeader() (err error) {
 	if _, err = r.Read(date); err != nil {
 		return
 	}
+
 	if h.Created, err = time.Parse(time.ANSIC, strings.TrimSpace(string(date))); err != nil {
-		return
+		// Tolerate bad parsing. .mat files created by Octave doesn't seem to conform to the format
 	}
 
 	if _, err = readAllBytes(headerSubsystemOffsetLen, f.r); err != nil {
@@ -190,22 +230,27 @@ func readAllBytes(p int, rdr io.Reader) (buf []byte, err error) {
 		n int
 		r []byte
 	)
-
-	for p > 0 {
+	remaining := p
+	for remaining > 0 {
 		r = make([]byte, p)
 		n, err = rdr.Read(r)
-
 		if err != nil {
 			if err.Error() == "EOF" {
-				if p-n == 0 {
+				if remaining-n == 0 {
+					// Finish reading
 					return append(buf, r[:n]...), nil
+				} else if p == remaining {
+					// Didn't read anything
+					return r, err
+				} else {
+					// Bad unpacking
+					return r, fmt.Errorf("EOF reached but we're supposed to read %d more bytes", remaining)
 				}
 			}
 			return
 		}
-
 		buf = append(buf, r[:n]...)
-		p -= n
+		remaining -= n
 	}
 	return
 }
@@ -223,141 +268,242 @@ func (f *File) ReadElement() (el *Element, err error) {
 	return readElement(f.Header.Endianess, f.r)
 }
 
-func readElement(bo binary.ByteOrder, r io.Reader) (el *Element, err error) {
-	var p int
-	el, p, err = readTag(bo, r)
+// ReadAllElements reads all the elements from a file's reader
+func (f *File) ReadAllElements() ([]*Element, error) {
+	return readAllElements(f.Header.Endianess, f.r)
+}
 
+func readElement(bo binary.ByteOrder, r io.Reader) (el *Element, err error) {
+	el, p, err := readTag(bo, r)
+	if err != nil {
+		return el, err
+	}
 	// if small element, p will be 0, bail early
 	if p == 0 {
+		return el, nil
+	}
+	// Technically we should pad p based on the type. But it seems like we only call this method on a compress or a matrix type which does not require padding. See Page 1-10
+	if !(el.Type == DTmiMATRIX || el.Type == DTmiCOMPRESSED) {
+		p = padTo64Bit(p)
+	}
+	buf, err := readAllBytes(p, r)
+	if err != nil {
+		return nil, err
+	}
+	if el.Type != DTmiCOMPRESSED {
+		el.Value, err = parse(el.Type, bo, buf)
+		return el, err
+	}
+	// data is compressed, use zlib reader
+	cr, err := zlib.NewReader(bytes.NewBuffer(buf))
+	if err != nil {
+		return nil, err
+	}
+	defer cr.Close()
+	allElements, err := readAllElements(bo, cr)
+	if err != nil {
+		return nil, err
+	}
+	el.Value = allElements
+	return el, nil
+}
+
+func readAllElements(bo binary.ByteOrder, r io.Reader) ([]*Element, error) {
+	var res []*Element
+	for {
+		el, err := readElement(bo, r)
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+		res = append(res, el)
+	}
+	return res, nil
+
+}
+
+// Reads the first 8 bytes. The 8 bytes can be one of two formats: Normal and small data element (sde) format.
+// Note that contrary to what the specs says, you have to consider endianness before parsing the first type bytes.
+func readTag(bo binary.ByteOrder, r io.Reader) (el *Element, len int, err error) {
+	buf, err := readAllBytes(8, r)
+	if err != nil {
 		return
 	}
-
-	var buf []byte
-	if el.Type != DTmiCOMPRESSED {
-		// read data
-		if buf, err = readAllBytes(int(p), r); err != nil {
-			return nil, err
-		}
-	} else {
-		// data is compressed, use zlib reader
-		cr, err := zlib.NewReader(r)
-		if err != nil {
-			return nil, err
-		}
-		defer cr.Close()
-
-		return readElement(bo, cr)
+	sdeLen, sdeType := binary.LittleEndian.Uint16(buf[2:4]), binary.LittleEndian.Uint16(buf[0:2])
+	if bo == binary.BigEndian {
+		sdeLen, sdeType = sdeType, sdeLen
 	}
-
-	el.Value, err = parse(el.Type, bo, buf)
+	if sdeLen != 0 {
+		// handle small data element
+		dt := DataType(sdeType)
+		el = &Element{Type: dt}
+		numEl := int(sdeLen) / dt.NumBytes()
+		//fmt.Printf("SMALL DATATYPE of type %s and length %d. The 8 bytes are %v\n", el.Type.String(), numEl, buf)
+		el.Value, err = parseMulti(el.Type, bo, buf[4:], numEl)
+		return
+	}
+	// normal type
+	u := bo.Uint32(buf[:4])
+	dataType := DataType(u)
+	el = &Element{Type: dataType}
+	len = int(bo.Uint32(buf[4:]))
+	//fmt.Printf("Tag: %s, len: %d, buf rep of tag: %v\n", el.Type.String(), len, buf)
 	return
 }
 
-func readTag(bo binary.ByteOrder, r io.Reader) (el *Element, len int, err error) {
-	var buf []byte
-	if buf, err = readAllBytes(8, r); err != nil {
-		return
+func parseMulti(t DataType, bo binary.ByteOrder, data []byte, len int) ([]interface{}, error) {
+	res := make([]interface{}, len)
+	for i := 0; i < len; i++ {
+		i2, err := parse(t, bo, data[i*t.NumBytes():(i+1)*t.NumBytes()])
+		if err != nil {
+			return nil, err
+		}
+		res[i] = i2
 	}
-
-	// handle small type
-	if buf[0] != 0 && buf[1] != 0 {
-		len = int(bo.Uint16(buf[:2]))
-		el = &Element{Type: DataType(bo.Uint16(buf[1:3]))}
-		fmt.Println("SMOL: ", el.Type.String(), len, buf)
-		el.Value, err = parse(el.Type, bo, buf[3:])
-		return
-	}
-
-	el = &Element{Type: DataType(bo.Uint32(buf[:4]))}
-	len = int(bo.Uint32(buf[4:]))
-	fmt.Println("read tag", el.Type.String(), len, buf)
-	return
+	return res, nil
 }
 
 func parse(t DataType, bo binary.ByteOrder, data []byte) (interface{}, error) {
 	switch t {
 	case DTmiINT8:
-		return int(data[0]), nil
-	case DTmiMATRIX:
-		return miMatrix(bo, data)
-	case DTmiUINT32:
-		return bo.Uint32(data), nil
+		return int8(data[0]), nil
+	case DTmiUINT8:
+		return uint8(data[0]), nil
+	case DTmiINT16:
+		return int16(bo.Uint16(data)), nil
+	case DTmiUINT16:
+		return bo.Uint16(data), nil
 	case DTmiINT32:
 		return int32(bo.Uint32(data)), nil
+	case DTmiUINT32:
+		return bo.Uint32(data), nil
+	case DTmiSINGLE:
+		return math.Float32frombits(bo.Uint32(data)), nil
+	case DTmiDOUBLE:
+		return math.Float64frombits(bo.Uint64(data)), nil
+	case DTmiINT64:
+		return int64(bo.Uint64(data)), nil
+	case DTmiUINT64:
+		return bo.Uint64(data), nil
+	case DTmiMATRIX:
+		return miMatrix(bo, data)
+	case DTmiUTF8:
+		r, _ := utf8.DecodeRune(data)
+		return r, nil
+	case DTmiUTF16:
+		decode := utf16.Decode([]uint16{bo.Uint16(data)})
+		return decode[0], nil
+	case DTmiUTF32:
+		panic("Not supported")
+	case DTmiCOMPRESSED:
+		panic("should not be parsing compressed data type here")
 	default:
-		return nil, fmt.Errorf("cannot parse data type: %s", t)
+		return nil, fmt.Errorf("cannot parse data type: %s. Probably just need to implement this", t)
 	}
 }
 
-func miMatrix(bo binary.ByteOrder, data []byte) (val interface{}, err error) {
+func miMatrix(bo binary.ByteOrder, data []byte) (interface{}, error) {
 	r := bytes.NewBuffer(data)
-
-	complex, class, err := arrayFlags(bo, r)
+	flags, class, err := arrayFlags(bo, r)
 	if err != nil {
-		return
+		return nil, err
 	}
-	fmt.Println(complex, class.String())
-
 	dim, err := dimensionsArray(bo, r)
 	if err != nil {
-		return
+		return nil, err
+	}
+	name, err := arrayName(bo, r)
+	if err != nil && err.Error() != "EOF" {
+		return nil, err
 	}
 
-	name, err := arrayName(bo, r)
+	switch class {
+	case mxSPARSE:
+		panic("Sparse matrix unsupported") // has 6 sub elements
+	case mxCELL:
+		panic("Cell matrix unsupported") // has 4 sub elements. Each cell is also a miMatrix
+	case mxSTRUCT:
+		panic("Struct matrix unsupported") // has 6 sub elements
+	case mxOBJECT:
+		panic("Object matrix unsupported") // has 7 sub elements
+	default: // 4 elements: Numeric and character array. Pass through
+	}
+	pr, err := readNumericalData(bo, r)
+	if err != nil && err.Error() != "EOF" {
+		return nil, err
+	}
+	if flags.isComplex {
+		if _, err := readNumericalData(bo, r); err != nil && err.Error() != "EOF" {
+			return nil, err
+		}
+		// TODO: Handle returning of complex numbers
+	}
+	fmt.Printf("Name: %s, Dim: %v, Data Size %v\n", name, dim, len(pr))
+	return pr, nil
+}
+
+// Flags indicating whether the numeric data is complex, global or logical. See 1-16 of specs.
+type Flags struct {
+	isLogical bool
+	isComplex bool
+	isGlobal  bool
+}
+
+// Docs is wrong about this. This is packed as two blocks of uint16. The first u16 in the data is for flags and class
+// and the second is for sparse matrix.
+func arrayFlags(bo binary.ByteOrder, r io.Reader) (flags Flags, class mxClass, err error) {
+	el, p, err := readTag(bo, r)
 	if err != nil {
 		return
 	}
-	fmt.Println(name, dim)
-	return nil, fmt.Errorf("not finished")
-
-	// var els []interface{}
-	// for {
-	// 	el, err := readElement(bo, r)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	els = append(els, el)
-	// }
-	// return nil, fmt.Errorf("cannot parse miMatrix")
-}
-
-func arrayFlags(bo binary.ByteOrder, r io.Reader) (complex bool, class mxClass, err error) {
-	fmt.Println("read array flags")
-	el, p, err := readTag(bo, r)
 	if el.Type != DTmiUINT32 {
-		err = fmt.Errorf("invalid matrix")
+		err = fmt.Errorf("invalid matrix, the array flags sub element in a matrix should have tag of type %s\n", DTmiUINT32)
 		return
 	}
-
-	buf := make([]byte, p)
-	// // read array flags
-	if _, err = r.Read(buf); err != nil {
+	if p != 8 {
+		err = fmt.Errorf("invalid matrix, the size of array tag should be 8 bytes. Got %d bytes instead", p)
 		return
 	}
-	// flags := (buf[0] &&& 0xff00) >>> 8 |> byte
-	// complex, glbl, logical := flags &&& 8, flags &&& 4, flags &&& 2
-	// fmt.Println(p, hex.EncodeToString(buf))
-	// TODO -
-	// complex = 8 & f[2]
-	// fmt.Println(hex.EncodeToString(buf), uint8(buf[3]))
-	fmt.Println(buf, buf[0]&0x00ff)
-	class = mxClass(buf[0] & 0x00ff)
+	buf, err := readAllBytes(8, r)
+	if err != nil {
+		return
+	}
+	// NonZeroMax is used to indicate the maximum number of nonzero array elements in the sparse array
+	flagsAndClass, nonZeroMax := binary.LittleEndian.Uint16(buf[:4]), binary.LittleEndian.Uint16(buf[4:])
+	if bo == binary.BigEndian {
+		flagsAndClass, nonZeroMax = nonZeroMax, flagsAndClass
+	}
+	flags = Flags{
+		isLogical: flagsAndClass>>9 == 1,
+		isGlobal:  flagsAndClass>>10 == 1,
+		isComplex: flagsAndClass>>11 == 1,
+	}
+	class = mxClass(uint8(flagsAndClass & 0xFF))
 	return
 }
 
+// Page 1-10 of spec says the value of num bytes field does not include padding for types other than matrix.
+// This function returns the number of bytes to read for an element that may or may not have padding.
+func padTo64Bit(p int) int {
+	offset := 0
+	if p%8 != 0 {
+		offset = 1
+	}
+	return ((p / 8) + offset) * 8
+}
+
 func dimensionsArray(bo binary.ByteOrder, r io.Reader) ([]int32, error) {
-	fmt.Println("dimensions array")
 	el, p, err := readTag(bo, r)
 	if err != nil {
 		return nil, err
 	}
 	if el.Type != DTmiINT32 {
-		return nil, fmt.Errorf("invalid data type")
+		return nil, fmt.Errorf("invalid data type. Expects dimension sub element to have type int32, got %s instead", el.Type)
 	}
-
-	// fmt.Println("NO MOAR TAGS", el.Type.String(), p)
-	buf := make([]byte, p)
-	if _, err := r.Read(buf); err != nil {
+	buf, err := readAllBytes(padTo64Bit(p), r)
+	if err != nil {
 		return nil, err
 	}
 
@@ -370,31 +516,46 @@ func dimensionsArray(bo binary.ByteOrder, r io.Reader) ([]int32, error) {
 		}
 		dim[i] = int32(bo.Uint32(sBuf))
 	}
-	fmt.Println(dim)
 	return dim, nil
 }
 
 func arrayName(bo binary.ByteOrder, r io.Reader) (string, error) {
-	fmt.Println("array name")
-	_, p, err := readTag(bo, r)
+	el, p, err := readTag(bo, r)
 	if err != nil {
 		return "", err
 	}
+	if p == 0 {
+		t := el.Value.([]interface{})
+		n := make([]byte, len(t))
+		for i, v := range t {
+			n[i] = byte(v.(int8))
+		}
+		return string(n), nil
+	}
+	if el.Type != DTmiINT8 {
+		return "", fmt.Errorf("invalid data type. Expects array name sub element to have type int8, got %s instead", el.Type)
+	}
+	data, err := readAllBytes(padTo64Bit(p), r)
+	return string(data[:p]), err
+}
 
-	// if el.Type != DTmiINT8 {
-	// 	return "", fmt.Errorf("invalid data type")
-	// }
-	// dimsr := bytes.NewBuffer(buf)
-	// sBuf := make([]byte, 4)
-	// dim := make([]byte, p/4)
-	// for i := 0; i < p/4; i++ {
-	// 	if _, err := dimsr.Read(sBuf); err != nil {
-	// 		return nil, err
-	// 	}
-	// 	dim[i] = int32(bo.Uint32(sBuf))
-	// }
-	data, err := readAllBytes(p, r)
-	return string(data), err
+// This can read the real part of imaginary part sub elements of a matrix
+func readNumericalData(bo binary.ByteOrder, r io.Reader) ([]interface{}, error) {
+	tag, numBytes, err := readTag(bo, r)
+	if err != nil {
+		return nil, err
+	}
+	// SDE
+	if numBytes == 0 {
+		return tag.Value.([]interface{}), nil
+	}
+	data, err := readAllBytes(numBytes, r)
+	if err != nil {
+		return nil, err
+	}
+	elementByteSize := tag.Type.NumBytes()
+	numElements := numBytes / elementByteSize
+	return parseMulti(tag.Type, bo, data, numElements)
 }
 
 type mxClass uint8

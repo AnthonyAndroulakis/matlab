@@ -7,6 +7,7 @@ The matlab format can be found in this [pdf](https://www.mathworks.com/help/pdf_
 This is still very much a work in progress!
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/daniellowtw/matlab)](https://goreportcard.com/report/github.com/daniellowtw/matlab)
+[![Travis CI](https://travis-ci.org/daniellowtw/matlab.svg?branch=master)](https://travis-ci.org/daniellowtw/matlab.svg?branch=master)
 
 # Example usage
 

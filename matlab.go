@@ -332,12 +332,13 @@ func readElement(bo binary.ByteOrder, r io.Reader) (el Element, err error) {
 		}
 		return miMatrix(bo, data)
 	default:
+		numElement := p / dt.NumBytes()
 		p = padTo64Bit(p)
 		buf, err := readAllBytes(p, r)
 		if err != nil {
 			return nil, err
 		}
-		content, err := parseContent(dt, bo, buf)
+		content, err := parseMulti(dt, bo, buf, numElement)
 		if err != nil {
 			return nil, err
 		}
@@ -482,7 +483,7 @@ func miMatrix(bo binary.ByteOrder, data []byte) (*Matrix, error) {
 			}
 			// TODO: Handle returning of complex numbers
 		}
-		res = pr.Value().([]interface{})
+		res = pr.Value()
 	}
 	return &Matrix{
 		Name:      name,
@@ -576,7 +577,7 @@ func arrayName(bo binary.ByteOrder, r io.Reader) (string, error) {
 		return "", err
 	}
 	if sde != nil {
-		t := sde.Value().([]interface{})
+		t := sde.Value()
 		n := make([]byte, len(t))
 		for i, v := range t {
 			n[i] = byte(v.(int8))

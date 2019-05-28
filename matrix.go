@@ -19,7 +19,7 @@ func (m *Matrix) Type() DataType {
 	return DTmiMATRIX
 }
 
-func (m *Matrix) Value() interface{} {
+func (m *Matrix) Value() []interface{} {
 	return m.value
 }
 

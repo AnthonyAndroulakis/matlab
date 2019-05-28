@@ -17,7 +17,7 @@ package main
 import (
 	"fmt"
 	"os"
-	
+
 	"github.com/daniellowtw/matlab"
 )
 
@@ -34,17 +34,27 @@ func main() {
 	fmt.Println(file.GetVarsNames()) // prints the variables in the mat file
 	matrix, _ := file.GetVar("a")
 	// convenient method to marshal into go types
-	var _ []int64 = matrix.IntArray() 
+	var _ []int64 = matrix.IntArray()
 	floatMatrix, _ := file.GetVar("b")
 	// convenient method to marshal into go types
-	var _ []float64 = floatMatrix.DoubleArray() 
+	var _ []float64 = floatMatrix.DoubleArray()
 }
+```
+
+# Matlab with cells
+
+A CellMatrix is a matrix where the values are matrices. The `GetAtLocation` method allows indexing into the values array. A convenience method `String()` on a Matrix is available to convert the CharArray matrix into a string.
+
+Example:
+```go
+cellMatrix, _ := file.GetVar("a")
+firstElement := cellMatrix.GetAtLocation(0).(*Matrix).String()
+SecondElement := cellMatrix.GetAtLocation(1).(*Matrix).DoubleArray()
 ```
 
 # TODO
 
 - Support sparse array class within miMatrix parser
 - Support structure class within miMatrix parser
-- Support cell class within miMatrix parser
 - Support object class within miMatrix parser
 - Support writing to mat file

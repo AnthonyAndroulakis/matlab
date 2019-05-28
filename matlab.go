@@ -302,7 +302,7 @@ func readElement(bo binary.ByteOrder, r io.Reader) (el Element, err error) {
 		return nil, err
 	}
 	// if small element, p will be 0, bail early
-	if p == 0 {
+	if sde != nil {
 		return sde, nil
 	}
 	switch dt {
@@ -363,7 +363,7 @@ func readAllElements(bo binary.ByteOrder, r io.Reader) ([]Element, error) {
 
 // Reads the first 8 bytes. The 8 bytes can be one of two formats: Normal and small data element (sde) format.
 // Note that contrary to what the specs says, you have to consider endianness before parsing the first type bytes.
-func readTag(bo binary.ByteOrder, r io.Reader) (sde smallDataElement, typ DataType, len int, err error) {
+func readTag(bo binary.ByteOrder, r io.Reader) (sde *smallDataElement, typ DataType, len int, err error) {
 	buf, err := readAllBytes(8, r)
 	if err != nil {
 		return
@@ -378,14 +378,14 @@ func readTag(bo binary.ByteOrder, r io.Reader) (sde smallDataElement, typ DataTy
 		numEl := int(sdeLen) / dt.NumBytes()
 		sdeContent, err := parseMulti(dt, bo, buf[4:], numEl)
 		if err != nil {
-			return smallDataElement{}, DataTypeUnknown, 0, err
+			return nil, DataTypeUnknown, 0, err
 		}
-		return smallDataElement{typ: dt, value: sdeContent}, typ, 0, nil
+		return &smallDataElement{typ: dt, value: sdeContent}, typ, 0, nil
 	}
 	// normal type
 	dataType := DataType(bo.Uint32(buf[:4]))
 	len = int(bo.Uint32(buf[4:]))
-	return smallDataElement{}, dataType, len, nil
+	return nil, dataType, len, nil
 }
 
 func parseMulti(t DataType, bo binary.ByteOrder, data []byte, len int) ([]interface{}, error) {
@@ -454,33 +454,42 @@ func miMatrix(bo binary.ByteOrder, data []byte) (*Matrix, error) {
 		return nil, err
 	}
 
+	var res []interface{}
 	switch class {
 	case mxSPARSE:
 		panic("Sparse matrix unsupported") // has 6 sub elements
-	case mxCELL:
-		panic("Cell matrix unsupported") // has 4 sub elements. Each cell is also a miMatrix
+	case mxCELL: // has 4 sub elements. Each cell is also a miMatrix
+		elements, err := readAllElements(bo, r)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range elements {
+			// we know they are matrices
+			res = append(res, e.(*Matrix))
+		}
 	case mxSTRUCT:
 		panic("Struct matrix unsupported") // has 6 sub elements
 	case mxOBJECT:
 		panic("Object matrix unsupported") // has 7 sub elements
 	default: // 4 elements: Numeric and character array. Pass through
-	}
-	pr, err := readNumericalData(bo, r)
-	if err != nil {
-		return nil, err
-	}
-	if flags.isComplex {
-		if _, err := readNumericalData(bo, r); err != nil && err.Error() != "EOF" {
+		pr, err := readNumericalData(bo, r)
+		if err != nil {
 			return nil, err
 		}
-		// TODO: Handle returning of complex numbers
+		if flags.isComplex {
+			if _, err := readNumericalData(bo, r); err != nil && err.Error() != "EOF" {
+				return nil, err
+			}
+			// TODO: Handle returning of complex numbers
+		}
+		res = pr.Value().([]interface{})
 	}
 	return &Matrix{
 		Name:      name,
 		flags:     flags,
 		Class:     class,
 		Dimension: dim,
-		value:     pr.Value().([]interface{}),
+		value:     res,
 	}, nil
 }
 
@@ -560,12 +569,13 @@ func dimensionsArray(bo binary.ByteOrder, r io.Reader) ([]int32, error) {
 	return dim, nil
 }
 
+// Note that array name can be empty!
 func arrayName(bo binary.ByteOrder, r io.Reader) (string, error) {
 	sde, dt, p, err := readTag(bo, r)
 	if err != nil {
 		return "", err
 	}
-	if p == 0 {
+	if sde != nil {
 		t := sde.Value().([]interface{})
 		n := make([]byte, len(t))
 		for i, v := range t {

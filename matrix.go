@@ -1,5 +1,9 @@
 package matlab
 
+import (
+	"unicode/utf16"
+)
+
 type Matrix struct {
 	Name      string
 	Dimension []int32 // at least length 2
@@ -17,6 +21,18 @@ func (m *Matrix) Type() DataType {
 
 func (m *Matrix) Value() interface{} {
 	return m.value
+}
+
+func (m *Matrix) GetAtLocation(i int) interface{} {
+	// boundaries check
+	max := 1
+	for _, x := range m.Dimension {
+		max *= int(x)
+	}
+	if i >= max {
+		return nil
+	}
+	return m.value[i]
 }
 
 // IntArray is a convenience method to extract the matrix value as []int64. Warning: It panics if the matlab class
@@ -63,4 +79,19 @@ func (m *Matrix) DoubleArray() []float64 {
 		}
 	}
 	return res
+}
+
+// String is a convenience method to extract the matrix value as []rune. Warning: It panics if the matlab class
+// is not mxChar
+func (m *Matrix) String() []rune {
+	var res []uint16
+	for _, e := range m.value {
+		switch m.Class {
+		case mxCHAR:
+			res = append(res, e.(uint16))
+		default:
+			panic("unable to convert matrix to double array")
+		}
+	}
+	return utf16.Decode(res)
 }

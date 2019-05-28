@@ -41,7 +41,7 @@ func main() {
 }
 ```
 
-# Matlab with cells
+# Matrix with cells
 
 A CellMatrix is a matrix where the values are matrices. The `GetAtLocation` method allows indexing into the values array. A convenience method `String()` on a Matrix is available to convert the CharArray matrix into a string.
 
@@ -68,7 +68,7 @@ We can read it as follows:
 ```go
 structMatrix, _ := file.GetVar("X")
 w := cellMatrix.Struct()["w"].GetAtLocation(0) // float64(1)
-z := cellMatrix.Struct()["w"].String() // "abc"
+z := cellMatrix.Struct()["z"].String() // "abc"
 ```
 
 # TODO

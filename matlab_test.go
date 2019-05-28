@@ -67,3 +67,24 @@ func TestMixedCells(t *testing.T) {
 
 	assert.Nil(t, r.GetAtLocation(100))
 }
+
+func TestStruct(t *testing.T) {
+	file, err := os.Open("testdata/simpleStruct.mat")
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	defer file.Close()
+	f, err := NewFileFromReader(file)
+	assert.NoError(t, err)
+	vars := f.GetVarsNames()
+	assert.Len(t, vars, 1)
+	assert.Subset(t, vars, strings.Split("X", ""))
+	r, hasVar := f.GetVar("X")
+	assert.True(t, hasVar)
+	assert.Equal(t, []int32{1, 1}, r.Dimension)
+	s := r.Struct()
+	assert.Equal(t, 1.0, s["w"].GetAtLocation(0))
+	assert.Empty(t, s["w"].Name)
+	assert.Equal(t, 2.0, s["y"].GetAtLocation(0))
+	assert.Equal(t, []rune("abc"), s["z"].String())
+}

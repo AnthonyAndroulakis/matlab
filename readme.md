@@ -52,9 +52,27 @@ firstElement := cellMatrix.GetAtLocation(0).(*Matrix).String()
 SecondElement := cellMatrix.GetAtLocation(1).(*Matrix).DoubleArray()
 ```
 
+# Matrix with struct
+
+Suppose we create a struct with the following:
+```matlab
+X.w = [1];
+# or X.w = 1
+
+X.y = [2];
+X.z = ["abc"];
+# or X.z = "abc"
+```
+
+We can read it as follows:
+```go
+structMatrix, _ := file.GetVar("X")
+w := cellMatrix.Struct()["w"].GetAtLocation(0) // float64(1)
+z := cellMatrix.Struct()["w"].String() // "abc"
+```
+
 # TODO
 
 - Support sparse array class within miMatrix parser
-- Support structure class within miMatrix parser
 - Support object class within miMatrix parser
 - Support writing to mat file

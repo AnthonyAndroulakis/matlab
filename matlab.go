@@ -468,8 +468,37 @@ func miMatrix(bo binary.ByteOrder, data []byte) (*Matrix, error) {
 			// we know they are matrices
 			res = append(res, e.(*Matrix))
 		}
-	case mxSTRUCT:
-		panic("Struct matrix unsupported") // has 6 sub elements
+	case mxSTRUCT: // has 6 sub elements
+		fieldLengthElement, err := readElement(bo, r)
+		if err != nil {
+			return nil, err
+		}
+		if fieldLengthElement.Type() != DTmiINT32 {
+			panic(fmt.Sprintf("Expects the max field name length element of a struct matrix to be of type %s. Got %s instead", DTmiINT32, fieldLengthElement.Type()))
+		}
+		maxLength := int(fieldLengthElement.Value()[0].(int32))
+		fieldNamesElement, err := readElement(bo, r)
+		if err != nil {
+			return nil, err
+		}
+		numFields := len(fieldNamesElement.Value()) / maxLength
+		keys := map[string]*Matrix{}
+		for i := 0; i < numFields; i++ {
+			var fieldName []byte
+			for s := i * maxLength; s < (i+1)*maxLength; s++ {
+				c := fieldNamesElement.Value()[s].(int8)
+				if c == 0 {
+					break
+				}
+				fieldName = append(fieldName, byte(c))
+			}
+			cellsElement, err := readElement(bo, r)
+			if err != nil {
+				return nil, err
+			}
+			keys[string(fieldName)] = cellsElement.(*Matrix)
+		}
+		res = []interface{}{keys}
 	case mxOBJECT:
 		panic("Object matrix unsupported") // has 7 sub elements
 	default: // 4 elements: Numeric and character array. Pass through

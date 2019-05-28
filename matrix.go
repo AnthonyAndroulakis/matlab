@@ -95,3 +95,8 @@ func (m *Matrix) String() []rune {
 	}
 	return utf16.Decode(res)
 }
+
+// Convenience method to return the struct
+func (m *Matrix) Struct() map[string]*Matrix {
+	return m.GetAtLocation(0).(map[string]*Matrix)
+}
